@@ -1,19 +1,16 @@
-import argparse
-from collections import defaultdict
-from datasets import load_dataset, Dataset
-from itertools import chain
 import multiprocessing
+import re
+import string
+from collections import defaultdict
 from multiprocessing import Pool
+
 import nltk
+import numpy as np
+from nltk import pos_tag
 from nltk.corpus import stopwords, wordnet
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import word_tokenize
-from nltk import pos_tag
-import numpy as np
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-import string
-import pickle
+
 
 class TextProcessor:
 
@@ -27,6 +24,9 @@ class TextProcessor:
         nltk.download('wordnet')
         nltk.download('averaged_perceptron_tagger')
         nltk.download('stopwords')
+        self.lemmatizer = WordNetLemmatizer()
+        self.stop_words = set(stopwords.words('english'))
+        self.data_index = [index for index, _ in enumerate(self.data)]
 
     def __str__(self):
         """String representation of TextProcessor"""
@@ -111,28 +111,40 @@ class TextProcessor:
     
 
     def worker(self, data_chunk):
-        lemmatizer = WordNetLemmatizer()
-        stop_words = set(stopwords.words('english'))
         table = str.maketrans(string.punctuation, ' ' * len(string.punctuation))
         lemmatized_chunk = []
 
-        for sentence in data_chunk:
-            sentence = sentence.translate(table).lower().replace("  ", " ")
+        for sentence_index in data_chunk:
+            if isinstance(sentence_index, str):
+                # Calling worker directly
+                sentence = sentence_index
+            else:
+            # if isinstance(sentence_index, np.int64):
+                # Calling worker from lemmatize_sentences
+                sentence = self.data[sentence_index]
+            sentence = str(sentence)
+            sentence = sentence.translate(table).lower()
+            sentence = re.sub(r'\\s\\s+', ' ', sentence)  # reduce double/multiple spaces to one space
             words = word_tokenize(sentence)
-            lemmatized_words = [lemmatizer.lemmatize(word, self.get_wordnet_pos(word)) for word in words if word not in stop_words and lemmatizer.lemmatize(word, self.get_wordnet_pos(word)) != '' ]
+            lemmatized_words = [self.lemmatizer.lemmatize(word, self.get_wordnet_pos(word)) for word in words if word not in self.stop_words and self.lemmatizer.lemmatize(word, self.get_wordnet_pos(word)) != '' ]
             lemmatized_words = [i for i in lemmatized_words if len(i) >= 3 and (not i.isdigit()) and ' ' not in i]
             lemmatized_chunk.append(lemmatized_words)
 
         return lemmatized_chunk
 
     def lemmatize_sentences(self):
+        """
+        On `data_chunks = np.array_split(self.data, num_processes)` I got:
+        numpy.core._exceptions._ArrayMemoryError: Unable to allocate 65.0 GiB for an array with shape (822606,) and data type <U21218
+        So we pass index now.
+        """
         num_processes = multiprocessing.cpu_count()
         pool = Pool(num_processes)
-        data_chunks = np.array_split(self.data, num_processes)
+        data_chunks = np.array_split(self.data_index, num_processes)
         results = pool.map(self.worker, data_chunks)
         pool.close()
         pool.join()
-        #print(results)
+        # print(results)
         self.lemmatized_sentences = [j for i in results for j in i]
         
         print(len(results), len(results[0]))
